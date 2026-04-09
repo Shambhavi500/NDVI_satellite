@@ -43,7 +43,7 @@ function NativeDrawControl({ onCreated, onDeleted, featureGroupRef }) {
                 polygon: {
                     allowIntersection: false,
                     drawError: { color: '#ef4444', message: 'ERROR: Intersections not allowed.' },
-                    shapeOptions: { color: '#10b981', weight: 2, fillOpacity: 0.1 }
+                    shapeOptions: { color: '#ffffff', weight: 4, fillOpacity: 0.0 }
                 }
             },
             edit: {
@@ -107,7 +107,6 @@ export default function MapView({
         layer.on({
             mouseover: async (e) => {
                 const props = feature.properties;
-                layer.setStyle({ weight: 1.8, color: '#ffffff', fillColor: '#ffffff', fillOpacity: 0.1 });
                 
                 // Set hover data directly from feature properties first
                 const bandKey = activeBand.toLowerCase();

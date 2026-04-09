@@ -7,12 +7,16 @@ and grid parameters are centralized here.
 Edit this file to tune the engine — no changes to business logic needed.
 """
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Google Earth Engine
 # ─────────────────────────────────────────────────────────────────────────────
-GEE_PROJECT_ID = "mindstrix-2026"
+GEE_PROJECT_ID = os.getenv("GEE_PROJECT_ID")
 DATASET = "COPERNICUS/S2_SR_HARMONIZED"   # Sentinel-2 Surface Reflectance
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Temporal Window
 # ─────────────────────────────────────────────────────────────────────────────

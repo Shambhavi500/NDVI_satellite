@@ -86,10 +86,34 @@ def extract_farm_statistics(
         ).getInfo()
         cvi_std = std_result.get("CVI") or 0.0
 
+        # ----- NDVI Area Histogram Calculation -----
+        ndvi = image.select("NDVI")
+        clamped_ndvi = ndvi.max(0.0).min(0.9999)
+        bucket_img = clamped_ndvi.divide(0.05).floor().int()
+        
+        area_img = ee.Image.pixelArea().addBands(bucket_img)
+        area_stats = area_img.reduceRegion(
+            reducer=ee.Reducer.sum().group(
+                groupField=1,
+                groupName="bucket"
+            ),
+            geometry=geometry,
+            scale=10,
+            maxPixels=1e9
+        ).getInfo()
+        
+        ndvi_histogram = {str(i): 0.0 for i in range(20)}
+        if area_stats and "groups" in area_stats:
+            for group in area_stats["groups"]:
+                b_idx = str(group.get("bucket", 0))
+                area_sqm = group.get("sum", 0.0)
+                ndvi_histogram[b_idx] = round(area_sqm / 10000.0, 2)
+
     except Exception as exc:
         logger.error("Failed to extract farm stats: %s", exc)
         mean_result = {b: None for b in stats_bands}
         cvi_std = 0.0
+        ndvi_histogram = {str(i): 0.0 for i in range(20)}
 
     confidence = compute_confidence(scene_count, avg_cloud or 0, cvi_std)
 
@@ -107,6 +131,7 @@ def extract_farm_statistics(
         "confidence": confidence,
         "scene_count": scene_count,
         "indices": {},
+        "ndvi_histogram": ndvi_histogram,
     }
 
     for band in stats_bands:

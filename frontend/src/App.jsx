@@ -94,7 +94,7 @@ export default function App() {
           {analysisData && (
               <>
                   <LayerToggle activeLayer={activeBand} onChange={setActiveBand} />
-                  <Legend activeLayer={activeBand} />
+                  <Legend activeLayer={activeBand} histogramData={analysisData.farm_summary?.ndvi_histogram} />
               </>
           )}
 
