@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function FarmSummary({ analysisData }) {
+export default function FarmSummary({ analysisData, activeField }) {
     if (!analysisData) return null;
 
     const farmArgs = analysisData.farm_summary;
@@ -9,9 +9,19 @@ export default function FarmSummary({ analysisData }) {
     return (
         <section className="card card--results" id="card-results" aria-labelledby="results-heading">
             <h2 className="card__title" id="results-heading">
-                <span className="card__icon">📊</span> Farm Summary
+                Farm Summary
             </h2>
             <div className="summary-grid" id="summary-grid" role="region" aria-label="Vegetation summary metrics">
+                <div className="summary-cell" style={{gridColumn: "1 / -1", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                    <div>
+                        <span className="summary-cell__label">Field Name</span>
+                        <span className="summary-cell__value" style={{color: '#fff'}}>{activeField?.name || 'Selected Field'}</span>
+                    </div>
+                    <div style={{textAlign: "right"}}>
+                        <span className="summary-cell__label">Computed Area</span>
+                        <span className="summary-cell__value" style={{color: '#22c55e'}}>{activeField?.areaHectares || 0} Ha</span>
+                    </div>
+                </div>
                 <div className="summary-cell" style={{gridColumn: "1 / -1"}}>
                     <span className="summary-cell__label">Composite Vegetation Index (CVI)</span>
                     <span className="summary-cell__value">{farmArgs.indices?.CVI?.mean?.toFixed(4) || 'N/A'}</span>

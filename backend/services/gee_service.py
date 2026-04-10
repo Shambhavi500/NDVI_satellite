@@ -272,3 +272,84 @@ def sample_point_value(
     except Exception as exc:
         logger.error("Point sampling failed at (%.4f, %.4f): %s", lat, lng, exc)
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daily Analysis Support
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_available_dates(
+    ee_geometry: ee.Geometry,
+    lookback_days: int = LOOKBACK_DAYS,
+    cloud_pct: int = MAX_CLOUD_COVER_PCT,
+) -> list[str]:
+    """
+    Return a sorted list of unique acquisition dates (YYYY-MM-DD)
+    for Sentinel-2 scenes covering the given geometry in the last N days.
+    """
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=lookback_days)
+
+    collection = (
+        ee.ImageCollection(DATASET)
+        .filterBounds(ee_geometry)
+        .filterDate(start_date.isoformat(), end_date.isoformat())
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud_pct))
+    )
+
+    # Extract dates from image properties
+    def _get_date(img):
+        d = ee.Date(img.get("system:time_start")).format("YYYY-MM-dd")
+        return ee.Feature(None, {"date": d})
+
+    date_fc = collection.map(_get_date)
+    date_list = date_fc.aggregate_array("date").distinct().sort().getInfo()
+
+    logger.info(
+        "Available dates (%s → %s): %d unique dates found",
+        start_date.isoformat(), end_date.isoformat(), len(date_list),
+    )
+    return date_list
+
+
+def get_single_day_composite(
+    ee_geometry: ee.Geometry,
+    target_date: str,
+    cloud_pct: int = MAX_CLOUD_COVER_PCT,
+) -> tuple[ee.Image | None, int]:
+    """
+    Fetch a Sentinel-2 composite for a single specific date.
+
+    Uses a ±1 day window to account for orbital timing.
+
+    Args:
+        ee_geometry: Farm polygon geometry.
+        target_date: ISO date string, e.g. '2026-01-15'.
+        cloud_pct  : Max allowed cloud cover percentage.
+
+    Returns:
+        Tuple of (composite_image | None, scene_count)
+    """
+    target = datetime.date.fromisoformat(target_date)
+    start = (target - datetime.timedelta(days=0)).isoformat()
+    end = (target + datetime.timedelta(days=1)).isoformat()
+
+    logger.info("Fetching S2 for single day: %s (window %s → %s)", target_date, start, end)
+
+    collection = (
+        ee.ImageCollection(DATASET)
+        .filterBounds(ee_geometry)
+        .filterDate(start, end)
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud_pct))
+        .map(_mask_clouds_scl)
+        .map(lambda img: img.divide(10000))
+    )
+
+    scene_count = collection.size().getInfo()
+    logger.info("Single-day scenes found: %d", scene_count)
+
+    if scene_count == 0:
+        return None, 0
+
+    composite = collection.median()
+    return composite, scene_count

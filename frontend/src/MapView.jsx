@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { MapContainer, TileLayer, FeatureGroup, GeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, FeatureGroup, GeoJSON, Polygon, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet-draw';
 import HeatmapLayer from './HeatmapLayer';
@@ -46,10 +46,7 @@ function NativeDrawControl({ onCreated, onDeleted, featureGroupRef }) {
                     shapeOptions: { color: '#ffffff', weight: 4, fillOpacity: 0.0 }
                 }
             },
-            edit: {
-                featureGroup: featureGroupRef.current,
-                edit: false,
-            }
+            edit: false
         });
         
         map.addControl(drawControl);
@@ -70,15 +67,76 @@ function NativeDrawControl({ onCreated, onDeleted, featureGroupRef }) {
     return null;
 }
 
+/**
+ * Renders a thick white border around the farm polygon and enables editing when active.
+ */
+function FarmBoundaryLayer({ boundary, isActive, isEditing, onClick, onEditUpdate }) {
+    const polygonRef = useRef(null);
+
+    useEffect(() => {
+        const layer = polygonRef.current;
+        if (!layer || !layer.editing) return;
+
+        if (isEditing) {
+            layer.editing.enable();
+            const onEdit = () => {
+                const geojson = layer.toGeoJSON();
+                if (onEditUpdate) onEditUpdate(geojson.geometry);
+            };
+            layer.on('edit', onEdit);
+            return () => {
+                layer.off('edit', onEdit);
+            };
+        } else {
+            layer.editing.disable();
+        }
+    }, [isEditing, onEditUpdate]);
+
+    if (!boundary || !boundary.coordinates) return null;
+    
+    // Convert GeoJSON coordinates [lng, lat] to Leaflet [lat, lng]
+    const rings = boundary.type === 'MultiPolygon'
+        ? boundary.coordinates.map(poly => poly[0].map(([lng, lat]) => [lat, lng]))
+        : [boundary.coordinates[0].map(([lng, lat]) => [lat, lng])];
+    
+    return (
+        <>
+            {rings.map((positions, i) => (
+                <Polygon
+                    ref={polygonRef}
+                    key={i}
+                    positions={positions}
+                    eventHandlers={{ click: onClick }}
+                    pathOptions={{
+                        color: isActive ? '#ffffff' : '#a1a1aa', // Dimmer if not active
+                        weight: isActive ? 5 : 3,
+                        fillOpacity: 0.1,
+                        fillColor: isActive ? 'transparent' : '#a1a1aa',
+                        opacity: 1,
+                        dashArray: null,
+                    }}
+                />
+            ))}
+        </>
+    );
+}
+
 export default function MapView({ 
     center, 
     activeBand, 
-    analysisData, 
+    analysisData,
+    activeFieldId,
+    editingFieldId,
+    fields = [], 
     onDrawComplete, 
-    onDrawDelete 
+    onDrawDelete,
+    onGeometryEdit
 }) {
     const featureGroupRef = useRef();
     const [hoverData, setHoverData] = useState(null);
+
+    // Extract farm boundary from analysisData
+    const farmBoundary = analysisData?.farm_boundary || null;
 
     const handleCreated = (e) => {
         const { layerType, layer } = e;
@@ -86,12 +144,9 @@ export default function MapView({
             const geojsonObj = layer.toGeoJSON();
             onDrawComplete(geojsonObj.geometry);
             
-            // Allow only one polygon at a time
+            // Hand over rendering to React state
             const fg = featureGroupRef.current;
-            fg.addLayer(layer);
-            fg.getLayers().forEach((l) => {
-                if (l !== layer) fg.removeLayer(l);
-            });
+            fg.removeLayer(layer);
         }
     };
 
@@ -159,11 +214,28 @@ export default function MapView({
                     />
                 </FeatureGroup>
 
-                {analysisData && (
+                {/* Render boundaries for all drawn fields */}
+                {fields.map(f => (
+                    <FarmBoundaryLayer 
+                        key={f.id} 
+                        boundary={f.geometry} 
+                        isActive={f.id === activeFieldId}
+                        isEditing={f.id === editingFieldId}
+                        onEditUpdate={(geo) => onGeometryEdit(f.id, geo)}
+                        onClick={() => {}}
+                    />
+                ))}
+
+                {/* Render heatmap AND grid ONLY for the active field */}
+                {analysisData && activeFieldId && (
                     <>
-                        <HeatmapLayer data={analysisData} activeBand={activeBand.toLowerCase()} />
+                        <HeatmapLayer 
+                            data={analysisData} 
+                            activeBand={activeBand.toLowerCase()} 
+                            farmBoundary={fields.find(f => f.id === activeFieldId)?.geometry}
+                        />
                         <GeoJSON 
-                            key={JSON.stringify(analysisData.farm_summary)}
+                            key={JSON.stringify(analysisData.farm_summary || analysisData.date)}
                             data={analysisData} 
                             style={cellStyle}
                             onEachFeature={onEachFeature}

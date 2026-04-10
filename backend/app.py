@@ -6,6 +6,8 @@ Flask REST API for the MindstriX Farm Visualization Interface.
 Routes:
     GET  /health      → Health check
     POST /api/analyze → GeoJSON polygon → vegetation index heatmap grid
+    POST /api/analyze-dates → GeoJSON polygon → list of available S2 dates (last 90 days)
+    POST /api/analyze-day   → GeoJSON polygon + date → single-day NDVI tile + grid
     GET  /api/sample  → Single pixel hover sampling
 
 Architecture:
@@ -17,6 +19,7 @@ Architecture:
 import logging
 import sys
 import os
+import datetime
 
 # ── Windows UTF-8 fix ────────────────────────────────────────────────────────
 if hasattr(sys.stdout, "reconfigure"):
@@ -25,12 +28,14 @@ if hasattr(sys.stdout, "reconfigure"):
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from config import LOG_LEVEL, LOG_FORMAT, LOG_DATE, LOG_FILE, GEE_PROJECT_ID
+from config import LOG_LEVEL, LOG_FORMAT, LOG_DATE, LOG_FILE, GEE_PROJECT_ID, LOOKBACK_DAYS, MAX_CLOUD_COVER_PCT
 from services.gee_service import (
     initialize_gee,
     get_sentinel_composite,
     get_smooth_tile_url,
     sample_point_value,
+    get_available_dates,
+    get_single_day_composite,
 )
 from services.index_service import compute_all_indices
 from services.grid_service import generate_grid, reduce_grid_values
@@ -145,6 +150,9 @@ def analyze():
         farm_summary    = extract_farm_statistics(indexed_image, collection, ee_geometry, scene_count)
         result_geojson["farm_summary"] = farm_summary
 
+        # Include the polygon coordinates for boundary rendering
+        result_geojson["farm_boundary"] = geojson_geometry
+
         # Tile URLs (kept for optional overlay use)
         index_vis = {'min': 0.0, 'max': 1.0, 'palette': NDVI_PALETTE}
         cvi_vis   = {'min': 0.0, 'max': 1.0, 'palette': CVI_PALETTE}
@@ -174,6 +182,100 @@ def analyze():
     except Exception as exc:
         logger.exception("Pipeline error: %s", exc)
         return jsonify({"error": f"Pipeline error: {str(exc)}"}), 500
+
+
+@app.route("/api/analyze-dates", methods=["POST"])
+def analyze_dates():
+    """
+    POST /api/analyze-dates
+
+    Request body (JSON):
+        { "geometry": <GeoJSON Polygon object> }
+
+    Response (JSON):
+        { "dates": ["2026-01-10", "2026-01-15", ...] }
+    
+    Returns all available Sentinel-2 image dates for the polygon in the last 90 days.
+    """
+    if not getattr(app, "_gee_ready", False):
+        return jsonify({"error": "GEE not initialised"}), 503
+
+    body = request.get_json(silent=True)
+    if not body or "geometry" not in body:
+        return jsonify({"error": "Missing geometry"}), 400
+
+    geojson_geometry = body["geometry"]
+    valid, validation_error = validate_polygon(geojson_geometry)
+    if not valid:
+        return jsonify({"error": validation_error}), 400
+
+    try:
+        ee_geometry = geojson_to_ee_geometry(geojson_geometry)
+        dates = get_available_dates(ee_geometry)
+        logger.info("Found %d available dates for the polygon.", len(dates))
+        return jsonify({"dates": dates}), 200
+    except Exception as exc:
+        logger.exception("Error fetching dates: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/analyze-day", methods=["POST"])
+def analyze_day():
+    """
+    POST /api/analyze-day
+
+    Request body (JSON):
+        { "geometry": <GeoJSON Polygon object>, "date": "2026-01-15" }
+
+    Response (JSON):
+        { "ndvi_tile_url": "...", "date": "2026-01-15", "features": [...], "farm_boundary": {...} }
+    
+    Returns NDVI heatmap tile URL + grid data for a single specific date.
+    """
+    if not getattr(app, "_gee_ready", False):
+        return jsonify({"error": "GEE not initialised"}), 503
+
+    body = request.get_json(silent=True)
+    if not body or "geometry" not in body or "date" not in body:
+        return jsonify({"error": "Missing geometry or date"}), 400
+
+    geojson_geometry = body["geometry"]
+    target_date = body["date"]
+
+    valid, validation_error = validate_polygon(geojson_geometry)
+    if not valid:
+        return jsonify({"error": validation_error}), 400
+
+    try:
+        ee_geometry = geojson_to_ee_geometry(geojson_geometry)
+        composite, scene_count = get_single_day_composite(ee_geometry, target_date)
+
+        if composite is None:
+            return jsonify({"error": f"No imagery found for date {target_date}"}), 200
+
+        indexed_image = compute_all_indices(composite)
+        grid = generate_grid(ee_geometry)
+        result_geojson = reduce_grid_values(indexed_image, grid, ee_geometry)
+
+        # Generate tile URL for NDVI
+        index_vis = {'min': 0.0, 'max': 1.0, 'palette': NDVI_PALETTE}
+        ndvi_tile_url = get_smooth_tile_url(indexed_image, ee_geometry, "NDVI", index_vis)
+
+        result_geojson["ndvi_tile_url"] = ndvi_tile_url
+        result_geojson["date"] = target_date
+        result_geojson["scene_count"] = scene_count
+        result_geojson["farm_boundary"] = geojson_geometry
+
+        # Store for hover sampling
+        app._last_indexed_image = indexed_image
+        app._last_ee_geometry = ee_geometry
+
+        logger.info("Day analysis complete for %s — %d scenes", target_date, scene_count)
+        return jsonify(result_geojson), 200
+
+    except Exception as exc:
+        logger.exception("Day analysis error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/sample", methods=["GET"])
