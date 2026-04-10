@@ -256,6 +256,9 @@ def analyze_day():
         indexed_image = compute_all_indices(composite)
         grid = generate_grid(ee_geometry)
         result_geojson = reduce_grid_values(indexed_image, grid, ee_geometry)
+        
+        farm_summary = extract_farm_statistics(indexed_image, None, ee_geometry, scene_count)
+        result_geojson["farm_summary"] = farm_summary
 
         # Generate tile URL for NDVI
         index_vis = {'min': 0.0, 'max': 1.0, 'palette': NDVI_PALETTE}
