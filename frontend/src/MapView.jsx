@@ -121,6 +121,7 @@ function FarmBoundaryLayer({ boundary, isActive, isEditing, onClick, onEditUpdat
     );
 }
 
+
 export default function MapView({ 
     center, 
     activeBand, 

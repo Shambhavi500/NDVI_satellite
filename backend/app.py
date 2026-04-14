@@ -27,6 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from chatbot import chatbot_bp
 
 from config import LOG_LEVEL, LOG_FORMAT, LOG_DATE, LOG_FILE, GEE_PROJECT_ID, LOOKBACK_DAYS, MAX_CLOUD_COVER_PCT
 from services.gee_service import (
@@ -62,11 +63,18 @@ logger = logging.getLogger("app")
 app = Flask(__name__)
 
 # Allow React dev server (port 5173) — adjust origins for production
-CORS(app, resources={r"/api/*": {"origins": [
+_ALLOWED_ORIGINS = [
     "http://localhost:5173",   # Vite dev server
     "http://localhost:4173",   # Vite preview
     "http://localhost:3000",   # fallback
-]}})
+]
+CORS(app, resources={
+    r"/api/*":      {"origins": _ALLOWED_ORIGINS},
+    r"/chatbot/*":  {"origins": _ALLOWED_ORIGINS},
+})
+
+# Register Krishi Mitra chatbot blueprint (prefix: /chatbot)
+app.register_blueprint(chatbot_bp)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EOS-style NDVI palette (continuous gradient, beige → dark green)
