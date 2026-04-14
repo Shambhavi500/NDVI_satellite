@@ -59,8 +59,8 @@ CVI_WEIGHTS = {
 # Grid Parameters
 # ─────────────────────────────────────────────────────────────────────────────
 GRID_SCALE_M = 10          # High-resolution 10m grid (Sentinel-2 native)
-MAX_GRID_CELLS = 1000       # Increased cap to allow for high-res coverage
-GRID_SCALE_STEP_M = 5      # Finer steps for auto-scaling
+MAX_GRID_CELLS = 2000       # Allow up to 2000 cells for fine-resolution coverage
+GRID_SCALE_STEP_M = 2      # Increment in 2m steps when auto-scaling up
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CVI Interpretation Thresholds

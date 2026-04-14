@@ -20,3 +20,8 @@ venv.bak/
 
 # Earth Engine Credentials (just in case they end up here)
 serviceAccountKey.json
+
+# Node modules / NPM (Ignore accidental root installs)
+node_modules/
+package-lock.json
+package.json

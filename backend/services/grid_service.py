@@ -5,17 +5,25 @@ Responsibilities:
     - Divide a farm polygon into a regular grid of cells
     - Auto-scale grid resolution to stay within MAX_GRID_CELLS cap
     - Reduce vegetation index values per cell using ee.Reducer.mean()
+    - Apply spatial Gaussian smoothing to remove per-pixel noise (EOS-style)
     - Attach interpretation labels to each cell
     - Convert the result to a GeoJSON FeatureCollection for the frontend
 
 Grid Strategy:
-    - Uses ee.Geometry.coveringGrid() for clean, axis-aligned cells
-    - Default scale: 30 m (suitable for field-level analysis)
+    - Uses ee.Geometry.coveringGrid() with .atScale() for correct metre-based tiling
+    - Default scale: 10 m (Sentinel-2 native resolution)
     - Auto-increments scale in GRID_SCALE_STEP_M steps if cell count > MAX_GRID_CELLS
-    - Falls back to random sampling if grid still exceeds cap
+
+Smoothing Strategy (EOS-equivalent):
+    - After reducing raw pixel values per cell, each cell's index values are
+      replaced by a Gaussian-weighted average of all cells within a 2× spacing
+      search radius.  sigma = 1.2 × average cell spacing.
+    - This removes single-cell noise / cloud artifacts and produces the smooth
+      continuous gradient that EOS displays.
 """
 
 import logging
+import math
 import ee
 
 from config import (
@@ -57,6 +65,10 @@ def generate_grid(ee_geometry: ee.Geometry, scale: int = GRID_SCALE_M) -> ee.Fea
     """
     Create a regular grid of cells covering the farm polygon.
 
+    Uses ee.Projection.atScale() so that 'scale' is always treated as metres,
+    regardless of the underlying projection's native units (fixes the EPSG:4326
+    degrees-vs-metres ambiguity in coveringGrid).
+
     Auto-escalates scale if the resulting cell count would exceed MAX_GRID_CELLS.
 
     Args:
@@ -67,15 +79,18 @@ def generate_grid(ee_geometry: ee.Geometry, scale: int = GRID_SCALE_M) -> ee.Fea
         ee.FeatureCollection of grid cell polygons.
     """
     # ── Find the right scale ──────────────────────────────────────────────────
+    # .atScale(n) sets scale in METRES, not in the projection's native degrees.
     current_scale = scale
-    grid = ee_geometry.coveringGrid("EPSG:4326", current_scale)
+    proj  = ee.Projection('EPSG:4326').atScale(current_scale)
+    grid  = ee_geometry.coveringGrid(proj)
     cell_count = grid.size().getInfo()
 
     logger.info("Initial grid at %dm: %d cells", current_scale, cell_count)
 
     while cell_count > MAX_GRID_CELLS:
         current_scale += GRID_SCALE_STEP_M
-        grid = ee_geometry.coveringGrid("EPSG:4326", current_scale)
+        proj  = ee.Projection('EPSG:4326').atScale(current_scale)
+        grid  = ee_geometry.coveringGrid(proj)
         cell_count = grid.size().getInfo()
         logger.info(
             "Grid too large — scaling up to %dm: %d cells",
@@ -161,15 +176,135 @@ def reduce_grid_values(
             "properties": rounded_props,
         })
 
+    # ── Spatial Gaussian smoothing (EOS-style noise removal) ─────────────────
+    # Replace each cell's raw pixel-mean with a Gaussian-weighted average of
+    # neighbouring cells.  This suppresses single-cell cloud artifacts and
+    # sensor noise, giving the smooth continuous gradient EOS displays.
+    smooth_bands = [b.lower() for b in index_bands if b != "CVI"]
+    features = _smooth_grid_values(features, smooth_bands, sigma_factor=0.6)
+
+    # Re-attach CVI interpretation after smoothing (CVI is derived, not smoothed)
+    for feat in features:
+        feat["properties"]["interpretation"] = _interpret_cvi(
+            feat["properties"].get("cvi")
+        )
+
     # Summary Log
     log_summary = " | ".join([
         f"{b.upper()}: {(sums[b]/counts[b]):.3f}" if counts[b] > 0 else f"{b.upper()}: N/A"
         for b in [b.lower() for b in index_bands]
     ])
     logger.info("Farm Average Indices: %s", log_summary)
-    logger.info("Grid reduction complete: %d features returned.", len(features))
+    logger.info("Grid reduction complete: %d features returned (smoothed).", len(features))
 
     return {
         "type": "FeatureCollection",
         "features": features,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spatial Gaussian Smoothing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _smooth_grid_values(
+    features: list,
+    bands: list[str],
+    sigma_factor: float = 1.2,
+) -> list:
+    """
+    Apply a spatial Gaussian smoothing pass to per-cell index values.
+
+    For each cell i, replace band_value[i] with:
+
+        smoothed[i] = Σ_j ( w_ij · value_j ) / Σ_j w_ij
+
+        where  w_ij = exp( -d_ij² / (2σ²) )
+               σ    = sigma_factor × average nearest-neighbour spacing
+               d_ij = Euclidean distance between cell centroids (degrees)
+
+    Only cells within a 3σ search radius contribute to the blend.
+    Cells with null values are excluded from both numerator and denominator.
+
+    Args:
+        features    : List of GeoJSON Feature dicts with lowercase band properties.
+        bands       : Band keys to smooth (e.g. ['ndvi', 'evi', ...]).
+        sigma_factor: Controls smoothing width.  1.2 ≈ EOS-level smoothing.
+                      Larger → wider blend, softer map.
+    """
+    if len(features) < 2:
+        return features
+
+    # ── Extract cell centroids ────────────────────────────────────────────────
+    centroids: list[tuple[float, float]] = []
+    for feat in features:
+        coords = feat["geometry"]["coordinates"][0]
+        cx = sum(c[0] for c in coords) / len(coords)
+        cy = sum(c[1] for c in coords) / len(coords)
+        centroids.append((cx, cy))
+
+    # ── Estimate average nearest-neighbour spacing (degrees) ─────────────────
+    n = len(centroids)
+    sample_step = max(1, n // 20)
+    total_nn, cnt = 0.0, 0
+    for i in range(0, n, sample_step):
+        min_d = float('inf')
+        for j in range(n):
+            if j == i:
+                continue
+            dx = centroids[i][0] - centroids[j][0]
+            dy = centroids[i][1] - centroids[j][1]
+            d  = math.sqrt(dx * dx + dy * dy)
+            if d < min_d:
+                min_d = d
+        if min_d < float('inf'):
+            total_nn += min_d
+            cnt += 1
+
+    if cnt == 0:
+        return features
+
+    avg_spacing = total_nn / cnt
+    sigma       = avg_spacing * sigma_factor
+    inv_2sig2   = 1.0 / (2.0 * sigma * sigma)
+    search_r2   = (sigma * 3.0) ** 2   # 3σ cutoff
+
+    logger.info(
+        "Spatial smoothing: %d cells, avg_spacing=%.6f°, sigma=%.6f° (factor=%.1f)",
+        n, avg_spacing, sigma, sigma_factor,
+    )
+
+    # ── Gaussian blend ────────────────────────────────────────────────────────
+    smoothed: list[dict] = []
+    for i, feat in enumerate(features):
+        cx_i, cy_i = centroids[i]
+        new_props = dict(feat["properties"])   # shallow copy
+
+        for band in bands:
+            if new_props.get(band) is None:
+                continue
+
+            w_sum, v_sum = 0.0, 0.0
+            for j in range(n):
+                val_j = features[j]["properties"].get(band)
+                if val_j is None:
+                    continue
+                dx = cx_i - centroids[j][0]
+                dy = cy_i - centroids[j][1]
+                d2 = dx * dx + dy * dy
+                if d2 > search_r2:
+                    continue
+                w = math.exp(-d2 * inv_2sig2)
+                w_sum += w
+                v_sum += w * val_j
+
+            if w_sum > 0:
+                new_props[band] = round(v_sum / w_sum, 4)
+
+        smoothed.append({
+            "type":       "Feature",
+            "geometry":   feat["geometry"],
+            "properties": new_props,
+        })
+
+    return smoothed

@@ -138,6 +138,13 @@ export default function MapView({
 
     // Extract farm boundary from analysisData
     const farmBoundary = analysisData?.farm_boundary || null;
+    
+    // Resolve frontend map tile URL for the current active vegetation index
+    const tileUrl = analysisData 
+        ? analysisData.index_tiles?.[`${activeBand?.toLowerCase()}_tile_url`] 
+            || (activeBand?.toLowerCase() === 'ndvi' && analysisData.ndvi_tile_url)
+            || analysisData.tile_url
+        : null;
 
     const handleCreated = (e) => {
         const { layerType, layer } = e;
@@ -230,9 +237,9 @@ export default function MapView({
                 {/* Render heatmap AND grid ONLY for the active field */}
                 {analysisData && activeFieldId && (
                     <>
-                        <HeatmapLayer 
-                            data={analysisData} 
-                            activeBand={activeBand.toLowerCase()} 
+                        <HeatmapLayer
+                            data={analysisData}
+                            activeBand={activeBand.toLowerCase()}
                             farmBoundary={fields.find(f => f.id === activeFieldId)?.geometry}
                         />
                         <GeoJSON 
