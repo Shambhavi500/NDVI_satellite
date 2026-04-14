@@ -1,14 +1,23 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # MindstriX CVI Engine — Web API Dependencies
 # ──────────────────────────────────────────────────────────────────────────────
+# Install into the backend venv:
+#   cd d:\Projects\MindStrix\backend
+#   .\venv\Scripts\activate
+#   pip install -r requirements.txt
 
-# Web framework
+# ── Web framework ─────────────────────────────────────────────────────────────
 Flask>=3.0.0
 flask-cors>=4.0.0
 
-# Google Earth Engine Python API
+# ── Google Earth Engine Python API ───────────────────────────────────────────
 earthengine-api>=0.1.390
 
-# Utilities
+# ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 firebase-admin>=6.4.0
+
+# ── Krishi Mitra Chatbot (chatbot/ module) ────────────────────────────────────
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-ollama>=0.2.0
