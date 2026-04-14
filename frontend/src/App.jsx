@@ -1,26 +1,48 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { signOut } from 'firebase/auth';
+import { auth } from './firebase';
 import MapView from './MapView';
 import Sidebar from './Sidebar';
-import LayerToggle from './LayerToggle';
 import Legend from './Legend';
 import LoadingOverlay from './LoadingOverlay';
 import TimelineBar from './TimelineBar';
 import NavbarDropdown from './NavbarDropdown';
+import PremiumAuthFlow from './PremiumAuthFlow';
 import { analyzeFarm, fetchAvailableDates, fetchDayAnalysis } from './api';
 import * as turf from '@turf/turf';
 import './index.css';
 
 export default function App() {
+  // ── Auth gate ──────────────────────────────────────────────────
+  const [authed, setAuthed]   = useState(false);
+  const [user,   setUser]     = useState(null);
+  const [dashVisible, setDashVisible] = useState(false);
+
+  const handleAuthSuccess = (userData) => {
+    setUser(userData || null);
+    setAuthed(true);
+    // Small delay so Success screen checkmark can be seen
+    setTimeout(() => setDashVisible(true), 300);
+  };
+
+  const handleLogout = async () => {
+    try { if (auth) await signOut(auth); } catch {}
+    setAuthed(false);
+    setUser(null);
+    setDashVisible(false);
+  };
+
+  // ── Dashboard state ────────────────────────────────────────────
   const [activeBand, setActiveBand] = useState('ndvi');
-  const [mapCenter, setMapCenter] = useState([18.1676592, 75.8131346]);
+  const [mapCenter, setMapCenter]   = useState([18.1676592, 75.8131346]);
   
   // Multi-field state
-  const [fields, setFields] = useState([]);
+  const [fields, setFields]             = useState([]);
   const [activeFieldId, setActiveFieldId] = useState(null);
   const [editingFieldId, setEditingFieldId] = useState(null);
   
   // Loading state
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading]     = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [isDayLoading, setIsDayLoading] = useState(false);
 
@@ -195,6 +217,11 @@ export default function App() {
       }
   };
 
+  // ── Auth gate: show PremiumAuthFlow when not authenticated ──
+  if (!authed) {
+    return <PremiumAuthFlow onAuthSuccess={handleAuthSuccess} />;
+  }
+
   return (
     <>
       <nav className="navbar">
@@ -205,7 +232,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="navbar__controls">
+        <div className="navbar__controls" style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
           {/* Field Manager Dropdown & Naming */}
           <div className="navbar__selectors" style={{marginRight: '8px'}}>
             {editingFieldId === activeFieldId && activeField ? (
@@ -287,6 +314,29 @@ export default function App() {
           <div className={`navbar__status ${isLoading ? 'is-loading' : analysisData ? 'is-success' : 'is-idle'}`}>
             <div className="status-dot"></div>
             <span>{isLoading ? 'Analyzing...' : analysisData ? 'Ready' : 'Draw a polygon to start'}</span>
+          </div>
+
+          <div className="navbar__select-divider"></div>
+
+          {/* User info + Logout */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginLeft:8 }}>
+            {user?.phone_number && (
+              <span style={{ fontSize:12, color:'#22c55e', fontWeight:600 }}>
+                {user.phone_number}
+              </span>
+            )}
+            <button
+              onClick={handleLogout}
+              style={{
+                background:'rgba(239,68,68,0.12)', color:'#ef4444', padding:'5px 12px',
+                borderRadius:8, border:'1px solid rgba(239,68,68,0.25)', cursor:'pointer',
+                fontSize:12, fontWeight:600, transition:'all 0.2s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background='rgba(239,68,68,0.22)'}
+              onMouseLeave={e => e.currentTarget.style.background='rgba(239,68,68,0.12)'}
+            >
+              Logout
+            </button>
           </div>
         </div>
       </nav>

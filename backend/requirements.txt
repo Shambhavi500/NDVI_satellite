@@ -15,6 +15,7 @@ earthengine-api>=0.1.390
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+firebase-admin>=6.4.0
 
 # ── Krishi Mitra Chatbot (chatbot/ module) ────────────────────────────────────
 langchain>=0.3.0

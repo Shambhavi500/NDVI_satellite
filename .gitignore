@@ -19,4 +19,4 @@ venv.bak/
 .env.local
 
 # Earth Engine Credentials (just in case they end up here)
-credentials
+serviceAccountKey.json

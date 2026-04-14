@@ -67,7 +67,7 @@
 
 html, body {
   height: 100%;
-  overflow: hidden;
+  overflow: auto;   /* auth flow needs scroll on small screens */
   font-family: var(--font-body);
   background: var(--c-bg);
   color: var(--c-text);
@@ -317,6 +317,7 @@ html, body {
   display: flex;
   height: 100vh;
   padding-top: var(--navbar-h);
+  overflow: hidden;  /* dashboard never scrolls */
 }
 
 /* ── Sidebar ────────────────────────────────────────────────────────────── */

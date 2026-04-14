@@ -41,6 +41,7 @@ from services.gee_service import (
 from services.index_service import compute_all_indices
 from services.grid_service import generate_grid, reduce_grid_values
 from services.stats_service import extract_farm_statistics
+from services.auth_service import init_firebase, verify_jwt_token
 from utils.geo_utils import geojson_to_ee_geometry, validate_polygon
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,14 +93,18 @@ CVI_PALETTE  = ['#ef4444', '#f59e0b', '#22c55e']
 # GEE Initialisation (once at startup)
 # ─────────────────────────────────────────────────────────────────────────────
 @app.before_request
-def _init_gee_once():
-    """Initialise GEE exactly once before any request is processed."""
+def _init_gee_and_firebase_once():
+    """Initialise GEE and Firebase exactly once before any request is processed."""
     if not hasattr(app, "_gee_ready"):
         app._gee_ready = initialize_gee()
         if app._gee_ready:
             logger.info("GEE initialised and ready.")
         else:
             logger.error("GEE initialisation failed — analysis requests will fail.")
+            
+    if not hasattr(app, "_firebase_ready"):
+        db = init_firebase()
+        app._firebase_ready = (db is not None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +117,7 @@ def health():
     return jsonify({
         "status": "ok",
         "gee_ready": getattr(app, "_gee_ready", False),
+        "firebase_ready": getattr(app, "_firebase_ready", False),
         "project": GEE_PROJECT_ID,
     })
 
@@ -316,6 +322,40 @@ def sample():
 
     value = sample_point_value(indexed_image, lat, lng, band, scale=10)
     return jsonify({"value": value, "band": band}), 200
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth Routes (Firebase Architecture 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/auth/verify-token", methods=["POST"])
+def verify_token_endpoint():
+    """
+    POST /api/auth/verify-token
+    Request body: { "idToken": "eyJhbGciOi... (JWT token from Firebase client)" }
+    """
+    body = request.get_json(silent=True)
+    if not body or "idToken" not in body:
+        return jsonify({"error": "Missing 'idToken' field"}), 400
+        
+    try:
+        # Securely decode the JWT using Firebase Admin SDK
+        decoded_user = verify_jwt_token(body["idToken"])
+        
+        # decoded_user contains phone_number, uid, auth_time, etc.
+        return jsonify({
+            "message": "Token verified successfully",
+            "user": {
+                "uid": decoded_user.get("uid"),
+                "phone_number": decoded_user.get("phone_number")
+            }
+        }), 200
+        
+    except ValueError as ve:
+        # Invalid or expired token
+        return jsonify({"error": str(ve)}), 401
+    except Exception as exc:
+        logger.exception("Server error verifying JWT token: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
