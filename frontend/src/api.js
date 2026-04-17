@@ -70,3 +70,51 @@ export async function fetchDayAnalysis(geoJsonGeometry, date) {
 
     return await response.json();
 }
+
+/**
+ * Sentinel-1 (Radar) API functions
+ */
+export async function analyzeS1Farm(geoJsonGeometry) {
+    const response = await fetch(apiUrl('/api/analyze-s1'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geometry: geoJsonGeometry }),
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Server error: ${response.status}`);
+    }
+
+    return await response.json();
+}
+
+export async function fetchS1AvailableDates(geoJsonGeometry) {
+    const response = await fetch(apiUrl('/api/analyze-s1-dates'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geometry: geoJsonGeometry }),
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Server error: ${response.status}`);
+    }
+
+    return await response.json();
+}
+
+export async function fetchS1DayAnalysis(geoJsonGeometry, date) {
+    const response = await fetch(apiUrl('/api/analyze-s1-day'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geometry: geoJsonGeometry, date }),
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Server error: ${response.status}`);
+    }
+
+    return await response.json();
+}

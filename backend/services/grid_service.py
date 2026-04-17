@@ -204,6 +204,99 @@ def reduce_grid_values(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sentinel-1 Grid Reduction
+# ─────────────────────────────────────────────────────────────────────────────
+
+def reduce_s1_grid_values(
+    indexed_image: ee.Image,
+    grid: ee.FeatureCollection,
+    ee_geometry: ee.Geometry,
+    scale: int = GRID_SCALE_M,
+) -> dict:
+    """
+    Reduce mean Sentinel-1 radar values for each grid cell and return as GeoJSON.
+
+    For each cell:
+        1. Compute mean VV, VH, VV_VH_RATIO, SMI, RVI
+        2. Attach SMI interpretation label
+        3. Round values to 4 decimal places
+
+    Args:
+        indexed_image: Multi-band ee.Image with S1 indices (from compute_s1_indices).
+        grid         : ee.FeatureCollection of grid cells.
+        ee_geometry  : Original farm polygon.
+        scale        : Pixel sampling resolution in metres.
+
+    Returns:
+        GeoJSON FeatureCollection dict.
+    """
+    s1_bands = ["VV", "VH", "VV_VH_RATIO", "SMI", "RVI"]
+    image_subset = indexed_image.select(s1_bands)
+
+    def _reduce_cell(cell: ee.Feature) -> ee.Feature:
+        stats = image_subset.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=cell.geometry(),
+            scale=scale,
+            maxPixels=1e8,
+        )
+        return cell.set(stats)
+
+    reduced = grid.map(_reduce_cell)
+
+    logger.info("Reducing S1 index values per grid cell…")
+    raw_geojson = reduced.getInfo()
+
+    features = []
+    # Map GEE band names to lowercase frontend keys
+    key_map = {
+        "VV": "vv",
+        "VH": "vh",
+        "VV_VH_RATIO": "vv_vh_ratio",
+        "SMI": "smi",
+        "RVI": "rvi",
+    }
+
+    for feature in raw_geojson.get("features", []):
+        props = feature.get("properties", {})
+        rounded_props = {}
+        for band in s1_bands:
+            val = props.get(band)
+            b_key = key_map[band]
+            rounded_props[b_key] = round(val, 4) if val is not None else None
+
+        # SMI interpretation
+        smi_val = rounded_props.get("smi")
+        if smi_val is not None:
+            if smi_val >= 0.8:
+                rounded_props["interpretation"] = "Wet soil — monitor drainage"
+            elif smi_val >= 0.5:
+                rounded_props["interpretation"] = "Good moisture — optimal"
+            elif smi_val >= 0.2:
+                rounded_props["interpretation"] = "Moderate moisture"
+            else:
+                rounded_props["interpretation"] = "Dry soil — irrigate"
+        else:
+            rounded_props["interpretation"] = "No data available"
+
+        features.append({
+            "type": "Feature",
+            "geometry": feature["geometry"],
+            "properties": rounded_props,
+        })
+
+    # Spatial Gaussian smoothing on radar bands
+    smooth_bands = list(key_map.values())
+    features = _smooth_grid_values(features, smooth_bands, sigma_factor=0.6)
+
+    logger.info("S1 grid reduction complete: %d features returned (smoothed).", len(features))
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Spatial Gaussian Smoothing
 # ─────────────────────────────────────────────────────────────────────────────
 

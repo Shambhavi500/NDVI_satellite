@@ -4,16 +4,69 @@ import L from 'leaflet';
 import 'leaflet-draw';
 import { Pentagon } from 'lucide-react';
 import HeatmapLayer from './HeatmapLayer';
-import { ndviToColor } from './colorUtils';
+import { getColor } from './colorUtils';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 
-/** Same clamp as HeatmapLayer — palette is indexed on [-1, 1]. */
-function heatmapPaletteColor(rawValue) {
+/** Unified palette color for hover tooltip — works for both S2 and S1 */
+function heatmapPaletteColor(rawValue, band, satellite) {
     if (rawValue === null || rawValue === undefined) return '#94a3b8';
     const n = Number(rawValue);
     if (Number.isNaN(n)) return '#94a3b8';
-    return ndviToColor(Math.max(-1, Math.min(1, n)));
+    return getColor(n, band, satellite);
+}
+
+/** Get display label + units for a band */
+function getBandDisplayInfo(band, satellite) {
+    if (satellite === 'sentinel1') {
+        switch (band) {
+            case 'smi':         return { label: 'SMI', unit: '%', format: (v) => `${(v * 100).toFixed(1)}%` };
+            case 'rvi':         return { label: 'RVI', unit: '', format: (v) => v.toFixed(4) };
+            case 'vv_vh_ratio': return { label: 'VV/VH', unit: '', format: (v) => v.toFixed(3) };
+            case 'vv':          return { label: 'VV', unit: 'dB', format: (v) => `${v.toFixed(2)} dB` };
+            case 'vh':          return { label: 'VH', unit: 'dB', format: (v) => `${v.toFixed(2)} dB` };
+            default:            return { label: band.toUpperCase(), unit: '', format: (v) => v.toFixed(4) };
+        }
+    }
+    return { label: band.toUpperCase(), unit: '', format: (v) => v.toFixed(4) };
+}
+
+/** Get interpretation text for hover tooltip */
+function getTooltipInterpretation(value, band, satellite) {
+    if (!Number.isFinite(value)) return '—';
+
+    if (satellite === 'sentinel1') {
+        switch (band) {
+            case 'smi':
+                if (value < 0.2) return 'Dry — irrigate';
+                if (value < 0.5) return 'Moderate moisture';
+                if (value < 0.8) return 'Good moisture';
+                return 'Wet — monitor drainage';
+            case 'rvi':
+                if (value < 0.3) return 'Sparse vegetation';
+                if (value < 0.6) return 'Moderate vegetation';
+                return 'Dense vegetation';
+            case 'vv_vh_ratio':
+                if (value < 4) return 'Dense crop canopy';
+                if (value < 8) return 'Growing stage';
+                return 'Sparse / bare soil';
+            case 'vv':
+                if (value < -15) return 'Wet surface';
+                if (value < -10) return 'Moderate moisture';
+                return 'Dry surface';
+            case 'vh':
+                if (value < -20) return 'Sparse vegetation';
+                if (value < -15) return 'Moderate vegetation';
+                return 'Dense vegetation';
+            default:
+                return '—';
+        }
+    }
+
+    // S2 default
+    if (value < 0.3) return 'Sparse vegetation';
+    if (value <= 0.6) return 'Moderate vegetation';
+    return 'Dense vegetation';
 }
 
 // Fix Leaflet icons
@@ -35,7 +88,7 @@ function FlyToHook({ center }) {
 }
 
 /**
- * Dismiss the “map your farm” hint when the user activates the polygon tool.
+ * Dismiss the "map your farm" hint when the user activates the polygon tool.
  * Uses capture on pointerdown without preventDefault so Leaflet Draw still receives the click.
  */
 function DrawHintDismissOnPolygonClick({ onPolygonToolActivate }) {
@@ -188,6 +241,7 @@ function FarmBoundaryLayer({ boundary, isActive, isEditing, onClick, onEditUpdat
 export default function MapView({ 
     center, 
     activeBand, 
+    activeSatellite = 'sentinel2',
     analysisData,
     activeFieldId,
     editingFieldId,
@@ -244,24 +298,22 @@ export default function MapView({
         return { fillColor: 'transparent', fillOpacity: 0, color: 'transparent', weight: 0 };
     };
 
+    const bandKey = activeBand.toLowerCase();
+    const bandInfo = getBandDisplayInfo(bandKey, activeSatellite);
+
     const onEachFeature = (feature, layer) => {
         layer.on({
             mouseover: async (e) => {
                 const props = feature.properties;
-                const bandKey = activeBand.toLowerCase();
                 const raw = props[bandKey];
                 const numeric = raw === null || raw === undefined || raw === '' ? NaN : Number(raw);
                 setHoverData({
-                   ndvi: props.ndvi?.toFixed(4) || 'N/A',
-                   cvi: props.cvi?.toFixed(4) || 'N/A',
-                   evi: props.evi?.toFixed(4) || 'N/A',
-                   bandValue: Number.isFinite(numeric) ? numeric.toFixed(4) : 'N/A',
+                   bandValue: Number.isFinite(numeric) ? bandInfo.format(numeric) : 'N/A',
                    bandNumeric: numeric,
-                   bandLabelColor: heatmapPaletteColor(numeric),
+                   bandLabelColor: heatmapPaletteColor(numeric, bandKey, activeSatellite),
                    x: e.originalEvent.pageX,
                    y: e.originalEvent.pageY
                 });
-
             },
             mouseout: (e) => {
                 layer.setStyle(cellStyle());
@@ -324,11 +376,12 @@ export default function MapView({
                     <>
                         <HeatmapLayer
                             data={analysisData}
-                            activeBand={activeBand.toLowerCase()}
+                            activeBand={bandKey}
+                            activeSatellite={activeSatellite}
                             farmBoundary={fields.find(f => f.id === activeFieldId)?.geometry}
                         />
                         <GeoJSON 
-                            key={`${JSON.stringify(analysisData.farm_summary || analysisData.date)}-${activeBand}`}
+                            key={`${JSON.stringify(analysisData.farm_summary || analysisData.date)}-${activeBand}-${activeSatellite}`}
                             data={analysisData} 
                             style={cellStyle}
                             onEachFeature={onEachFeature}
@@ -378,7 +431,7 @@ export default function MapView({
                                 transition: 'color 0.14s ease-out',
                             }}
                         >
-                            {activeBand.toUpperCase()}:{' '}
+                            {bandInfo.label}:{' '}
                         </span>
                         <span style={{ color: '#e2e8f0' }}>{hoverData.bandValue}</span>
                     </div>
@@ -395,13 +448,7 @@ export default function MapView({
                             transition: 'color 0.14s ease-out, opacity 0.14s ease-out',
                         }}
                     >
-                        {Number.isFinite(hoverData.bandNumeric)
-                            ? (hoverData.bandNumeric < 0.3
-                                ? 'Sparse vegetation'
-                                : hoverData.bandNumeric <= 0.6
-                                  ? 'Moderate vegetation'
-                                  : 'Dense vegetation')
-                            : '—'}
+                        {getTooltipInterpretation(hoverData.bandNumeric, bandKey, activeSatellite)}
                     </div>
                 </div>
             )}

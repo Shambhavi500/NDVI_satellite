@@ -12,6 +12,11 @@ from config import (
     NDWI_THRESHOLDS,
     GNDVI_THRESHOLDS,
     MAX_CLOUD_COVER_PCT,
+    VV_THRESHOLDS,
+    VH_THRESHOLDS,
+    VV_VH_RATIO_THRESHOLDS,
+    SMI_THRESHOLDS,
+    RVI_THRESHOLDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,5 +146,70 @@ def extract_farm_statistics(
             "mean": round(mean_val, 4) if mean_val is not None else None,
             "interpretation": interp
         }
+
+    return farm_summary
+
+
+def extract_s1_farm_statistics(
+    image: ee.Image,
+    geometry: ee.Geometry,
+    scene_count: int,
+) -> dict:
+    """
+    Extracts farm-level mean statistics for Sentinel-1 radar indices.
+
+    Returns a summary dict with mean VV, VH, VV/VH ratio, SMI, RVI
+    plus an SMI-based irrigation advisory.
+    """
+    stats_bands = ["VV", "VH", "VV_VH_RATIO", "SMI", "RVI"]
+
+    try:
+        mean_result = image.select(stats_bands).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=geometry,
+            scale=10,
+            maxPixels=1e9
+        ).getInfo()
+    except Exception as exc:
+        logger.error("Failed to extract S1 farm stats: %s", exc)
+        mean_result = {b: None for b in stats_bands}
+
+    thresholds_map = {
+        "VV": VV_THRESHOLDS,
+        "VH": VH_THRESHOLDS,
+        "VV_VH_RATIO": VV_VH_RATIO_THRESHOLDS,
+        "SMI": SMI_THRESHOLDS,
+        "RVI": RVI_THRESHOLDS,
+    }
+
+    farm_summary = {
+        "confidence": min(scene_count / 5, 1.0),
+        "scene_count": scene_count,
+        "indices": {},
+        "source": "sentinel1",
+    }
+
+    for band in stats_bands:
+        mean_val = mean_result.get(band)
+        interp = interpret_value(mean_val, thresholds_map[band])
+        farm_summary["indices"][band] = {
+            "mean": round(mean_val, 4) if mean_val is not None else None,
+            "interpretation": interp
+        }
+
+    # Generate SMI-based irrigation advisory
+    smi_val = mean_result.get("SMI")
+    if smi_val is not None:
+        smi_pct = round(smi_val * 100, 1)
+        if smi_val < 0.2:
+            farm_summary["advisory"] = f"Soil moisture at {smi_pct}% — Dry. Immediate irrigation recommended."
+        elif smi_val < 0.5:
+            farm_summary["advisory"] = f"Soil moisture at {smi_pct}% — Moderate. Consider watering in 2–3 days."
+        elif smi_val < 0.8:
+            farm_summary["advisory"] = f"Soil moisture at {smi_pct}% — Good condition. Next watering in 5–7 days."
+        else:
+            farm_summary["advisory"] = f"Soil moisture at {smi_pct}% — Wet. Monitor for waterlogging risk."
+    else:
+        farm_summary["advisory"] = "Soil moisture data unavailable."
 
     return farm_summary

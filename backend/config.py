@@ -118,6 +118,52 @@ CONFIDENCE_SCENE_TARGET = 5
 CONFIDENCE_STD_MAX = 0.3
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sentinel-1 SAR (Radar) Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+S1_DATASET = "COPERNICUS/S1_GRD"          # Sentinel-1 Ground Range Detected
+S1_BANDS   = {"VV": "VV", "VH": "VH"}    # Dual-pol band aliases
+
+# SMI calibration defaults (global; override per-farm/region later)
+SMI_VV_VH_MIN = 3.0    # Minimum observed VV/VH ratio (dense vegetation)
+SMI_VV_VH_MAX = 12.0   # Maximum observed VV/VH ratio (bare / dry soil)
+
+# Speckle filter radius (pixels) — Lee-equivalent focal_mean in GEE
+S1_SPECKLE_RADIUS = 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel-1 Interpretation Thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+VV_THRESHOLDS = {
+    -5.0:  "Wet surface / flooded",
+    -10.0: "Moderate moisture",
+    -15.0: "Dry surface",
+    -25.0: "Very dry / smooth",
+}
+VH_THRESHOLDS = {
+    -10.0: "Dense vegetation canopy",
+    -15.0: "Moderate vegetation",
+    -20.0: "Sparse vegetation",
+    -30.0: "Bare soil / no vegetation",
+}
+VV_VH_RATIO_THRESHOLDS = {
+    10.0:  "Sparse vegetation / bare soil",
+    6.0:   "Moderate vegetation (growing stage)",
+    2.0:   "Dense vegetation (peak growth)",
+}
+SMI_THRESHOLDS = {
+    0.8:  "Wet soil — monitor drainage",
+    0.5:  "Good moisture — optimal for crops",
+    0.2:  "Moderate moisture",
+    0.0:  "Dry soil — irrigation needed",
+}
+RVI_THRESHOLDS = {
+    0.6:  "Dense vegetation",
+    0.3:  "Moderate vegetation",
+    0.1:  "Sparse vegetation",
+    0.0:  "Bare soil / no vegetation",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
 LOG_LEVEL  = "INFO"

@@ -8,7 +8,7 @@ import LoadingOverlay from './LoadingOverlay';
 import TimelineBar from './TimelineBar';
 import NavbarDropdown from './NavbarDropdown';
 import PremiumAuthFlow from './PremiumAuthFlow';
-import { analyzeFarm, fetchAvailableDates, fetchDayAnalysis } from './api';
+import { analyzeFarm, fetchAvailableDates, fetchDayAnalysis, analyzeS1Farm, fetchS1AvailableDates, fetchS1DayAnalysis } from './api';
 import * as turf from '@turf/turf';
 import { ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import FieldNameModal from './FieldNameModal';
@@ -36,6 +36,7 @@ export default function App() {
 
   // ── Dashboard state ────────────────────────────────────────────
   const [activeBand, setActiveBand] = useState('ndvi');
+  const [activeSatellite, setActiveSatellite] = useState('sentinel2');
   const [mapCenter, setMapCenter]   = useState([18.1676592, 75.8131346]);
   
   // Multi-field state
@@ -55,13 +56,45 @@ export default function App() {
   const [isLoading, setIsLoading]     = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [isDayLoading, setIsDayLoading] = useState(false);
+  const [isS1Loading, setIsS1Loading] = useState(false);
 
   // Derived state for the currently selected field
   const activeField = fields.find(f => f.id === activeFieldId);
-  const analysisData = activeField?.analysisData || null;
+
+  // Pick analysis data based on active satellite
+  const analysisData = activeSatellite === 'sentinel1'
+    ? (activeField?.s1AnalysisData || null)
+    : (activeField?.analysisData || null);
+
   const drawnGeometry = activeField?.geometry || null;
-  const availableDates = activeField?.availableDates || [];
-  const selectedDate = activeField?.selectedDate || null;
+
+  const availableDates = activeSatellite === 'sentinel1'
+    ? (activeField?.s1AvailableDates || [])
+    : (activeField?.availableDates || []);
+
+  const selectedDate = activeSatellite === 'sentinel1'
+    ? (activeField?.s1SelectedDate || null)
+    : (activeField?.selectedDate || null);
+
+  // Band options per satellite
+  const S2_BANDS = [
+      { value: "ndvi", label: "NDVI" },
+      { value: "evi", label: "EVI" },
+      { value: "savi", label: "SAVI" },
+      { value: "ndmi", label: "NDMI" },
+      { value: "gndvi", label: "GNDVI" },
+      { value: "cvi", label: "CVI" }
+  ];
+
+  const S1_BANDS = [
+      { value: "smi", label: "Soil Moisture (SMI)" },
+      { value: "rvi", label: "Radar Vegetation (RVI)" },
+      { value: "vv_vh_ratio", label: "VV/VH Ratio" },
+      { value: "vv", label: "VV Polarization" },
+      { value: "vh", label: "VH Polarization" },
+  ];
+
+  const bandOptions = activeSatellite === 'sentinel1' ? S1_BANDS : S2_BANDS;
 
   const simulateProgress = () => {
     setCurrentStep(0);
@@ -85,6 +118,48 @@ export default function App() {
     setNameModal({ type: 'new', geometry });
   };
 
+  // ── Satellite switching + lazy S1 fetch ────────────────────────
+  const handleSatelliteChange = async (sat) => {
+    setActiveSatellite(sat);
+
+    // Switch active band to first option of the new satellite
+    if (sat === 'sentinel1') {
+        setActiveBand('smi');
+
+        // Lazy-fetch S1 data for active field if not yet fetched
+        if (activeField && !activeField.s1AnalysisData && activeField.geometry) {
+            setIsS1Loading(true);
+            try {
+                const s1Data = await analyzeS1Farm(activeField.geometry);
+                let s1Dates = [];
+                let s1SelectedDate = null;
+                if (!s1Data.error) {
+                    try {
+                        const dateResult = await fetchS1AvailableDates(activeField.geometry);
+                        if (dateResult.dates?.length > 0) {
+                            s1Dates = dateResult.dates;
+                            s1SelectedDate = dateResult.dates[dateResult.dates.length - 1];
+                        }
+                    } catch (e) { console.warn('S1 dates fetch error:', e); }
+                }
+
+                setFields(prev => prev.map(f => f.id === activeFieldId ? {
+                    ...f,
+                    s1AnalysisData: s1Data.error ? null : s1Data,
+                    s1AvailableDates: s1Dates,
+                    s1SelectedDate: s1SelectedDate,
+                } : f));
+            } catch (err) {
+                console.error('S1 analysis failed:', err);
+            } finally {
+                setIsS1Loading(false);
+            }
+        }
+    } else {
+        setActiveBand('ndvi');
+    }
+  };
+
   const runNewFieldAnalysis = async (fieldName, geometry) => {
     setIsLoading(true);
     const progressTimer = simulateProgress();
@@ -101,6 +176,10 @@ export default function App() {
       analysisData: null,
       availableDates: [],
       selectedDate: null,
+      // S1 fields (lazy-loaded)
+      s1AnalysisData: null,
+      s1AvailableDates: [],
+      s1SelectedDate: null,
     };
 
     try {
@@ -165,24 +244,30 @@ export default function App() {
   };
 
   const handleDateSelect = async (date) => {
-    if (!activeField || date === activeField.selectedDate) return;
-    
-    // Optimistically set the date for this field
-    setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, selectedDate: date } : f));
-    setIsDayLoading(true);
+    if (!activeField) return;
 
-    try {
-        const dayData = await fetchDayAnalysis(activeField.geometry, date);
-        if (dayData.error) {
-            console.warn(`No data for ${date}: ${dayData.error}`);
-            // Keep existing analysis data visible
-        } else {
-            setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, analysisData: dayData } : f));
+    if (activeSatellite === 'sentinel1') {
+      if (date === activeField.s1SelectedDate) return;
+      setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, s1SelectedDate: date } : f));
+      setIsDayLoading(true);
+      try {
+        const dayData = await fetchS1DayAnalysis(activeField.geometry, date);
+        if (!dayData.error) {
+          setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, s1AnalysisData: dayData } : f));
         }
-    } catch (err) {
-        console.error('Day analysis failed:', err);
-    } finally {
-        setIsDayLoading(false);
+      } catch (err) { console.error('S1 day analysis failed:', err); }
+      finally { setIsDayLoading(false); }
+    } else {
+      if (date === activeField.selectedDate) return;
+      setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, selectedDate: date } : f));
+      setIsDayLoading(true);
+      try {
+        const dayData = await fetchDayAnalysis(activeField.geometry, date);
+        if (!dayData.error) {
+          setFields(prev => prev.map(f => f.id === activeFieldId ? { ...f, analysisData: dayData } : f));
+        }
+      } catch (err) { console.error('Day analysis failed:', err); }
+      finally { setIsDayLoading(false); }
     }
   };
 
@@ -222,7 +307,7 @@ export default function App() {
     setFields((prev) =>
       prev.map((f) =>
         f.id === id
-          ? { ...f, geometry: geom, areaHectares, analysisData: null, availableDates: [], selectedDate: null }
+          ? { ...f, geometry: geom, areaHectares, analysisData: null, availableDates: [], selectedDate: null, s1AnalysisData: null, s1AvailableDates: [], s1SelectedDate: null }
           : f
       )
     );
@@ -375,9 +460,12 @@ export default function App() {
           <div className="navbar__group">
           <div className="navbar__selectors">
             <NavbarDropdown 
-                value="sentinel2"
-                onChange={() => {}}
-                options={[{ value: "sentinel2", label: "Sentinel-2" }]}
+                value={activeSatellite}
+                onChange={handleSatelliteChange}
+                options={[
+                    { value: "sentinel2", label: "Sentinel-2 (Optical)" },
+                    { value: "sentinel1", label: "Sentinel-1 (Radar)" },
+                ]}
             />
             
             <div className="navbar__select-divider"></div>
@@ -385,21 +473,14 @@ export default function App() {
             <NavbarDropdown 
                 value={activeBand}
                 onChange={(val) => setActiveBand(val)}
-                options={[
-                    { value: "ndvi", label: "NDVI" },
-                    { value: "evi", label: "EVI" },
-                    { value: "savi", label: "SAVI" },
-                    { value: "ndmi", label: "NDMI" },
-                    { value: "gndvi", label: "GNDVI" },
-                    { value: "cvi", label: "CVI" }
-                ]}
+                options={bandOptions}
             />
           </div>
           </div>
 
-          <div className={`navbar__status ${isLoading ? 'is-loading' : analysisData ? 'is-success' : 'is-idle'}`}>
+          <div className={`navbar__status ${isLoading || isS1Loading ? 'is-loading' : analysisData ? 'is-success' : 'is-idle'}`}>
             <div className="status-dot"></div>
-            <span>{isLoading ? 'Analyzing…' : analysisData ? 'Ready' : 'Awaiting field'}</span>
+            <span>{isLoading ? 'Analyzing…' : isS1Loading ? 'Loading radar…' : analysisData ? 'Ready' : 'Awaiting field'}</span>
           </div>
 
           <div className="navbar__user-bar">
@@ -419,6 +500,7 @@ export default function App() {
           onFlyTo={handleFlyTo}
           analysisData={analysisData}
           activeBand={activeBand}
+          activeSatellite={activeSatellite}
           activeFieldId={activeFieldId}
           activeField={activeField}
         />
@@ -441,6 +523,7 @@ export default function App() {
           <MapView 
               center={mapCenter}
               activeBand={activeBand}
+              activeSatellite={activeSatellite}
               analysisData={analysisData}
               activeFieldId={activeFieldId}
               editingFieldId={editingFieldId}
@@ -453,7 +536,7 @@ export default function App() {
           />
 
           {analysisData && activeFieldId && (
-              <Legend activeLayer={activeBand} histogramData={analysisData.farm_summary?.ndvi_histogram} />
+              <Legend activeLayer={activeBand} activeSatellite={activeSatellite} histogramData={analysisData.farm_summary?.ndvi_histogram} />
           )}
 
 
@@ -471,10 +554,10 @@ export default function App() {
           <LoadingOverlay isVisible={isLoading} currentStepIdx={currentStep} />
 
           {/* Day loading mini indicator */}
-          {isDayLoading && !isLoading && (
+          {(isDayLoading || isS1Loading) && !isLoading && (
               <div className="day-loading-indicator">
                   <div className="day-loading-spinner" />
-                  <span>Loading imagery…</span>
+                  <span>{isS1Loading ? 'Loading radar data…' : 'Loading imagery…'}</span>
               </div>
           )}
         </main>

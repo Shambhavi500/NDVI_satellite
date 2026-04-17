@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { ndviToColor } from './colorUtils';
+import { getColor, BAND_RANGES } from './colorUtils';
 
 /**
  * Geographic image-overlay heatmap.
@@ -9,8 +9,11 @@ import { ndviToColor } from './colorUtils';
  * Renders the IDW once into a fixed raster in lat/lng space, converts to a
  * PNG data-URL, and hands it to L.imageOverlay. Leaflet then scales / pans
  * the <img> during zoom exactly like a tile — zero JS redraws, zero lag.
+ *
+ * Supports both Sentinel-2 (optical) and Sentinel-1 (radar) bands via
+ * the `activeSatellite` prop and unified `getColor()` dispatcher.
  */
-export default function HeatmapLayer({ data, activeBand, farmBoundary }) {
+export default function HeatmapLayer({ data, activeBand, activeSatellite = 'sentinel2', farmBoundary }) {
     const map = useMap();
     const overlayRef = useRef(null);
 
@@ -43,8 +46,12 @@ export default function HeatmapLayer({ data, activeBand, farmBoundary }) {
         const cellLng = [];
         const cellVal = [];
 
+        // Get band-specific value range for clamping
+        const bandKey = activeBand.toLowerCase();
+        const [rangeMin, rangeMax] = BAND_RANGES[bandKey] || [-1, 1];
+
         for (const f of features) {
-            const v = f.properties?.[activeBand];
+            const v = f.properties?.[bandKey];
             if (v === null || v === undefined || isNaN(v)) continue;
             const ring = f.geometry?.coordinates?.[0];
             if (!ring?.length) continue;
@@ -53,7 +60,7 @@ export default function HeatmapLayer({ data, activeBand, farmBoundary }) {
             const n = ring.length;
             cellLat.push(sLat / n);
             cellLng.push(sLng / n);
-            cellVal.push(Math.max(-1, Math.min(1, v)));
+            cellVal.push(Math.max(rangeMin, Math.min(rangeMax, v)));
         }
         const N = cellLat.length;
         if (!N) return;
@@ -87,16 +94,17 @@ export default function HeatmapLayer({ data, activeBand, farmBoundary }) {
         }
         const spacing = cnt > 0 ? totalMin / cnt : 20;
 
-        /* ── colour LUT ───────────────────────────────────────────── */
+        /* ── colour LUT (band-specific) ───────────────────────────── */
         const LUT = 512;
         const lR = new Uint8Array(LUT), lG = new Uint8Array(LUT), lB = new Uint8Array(LUT);
         for (let i = 0; i < LUT; i++) {
-            const hex = ndviToColor(-1 + (i / (LUT - 1)) * 2);
+            const v = rangeMin + (i / (LUT - 1)) * (rangeMax - rangeMin);
+            const hex = getColor(v, bandKey, activeSatellite);
             lR[i] = parseInt(hex.slice(1, 3), 16);
             lG[i] = parseInt(hex.slice(3, 5), 16);
             lB[i] = parseInt(hex.slice(5, 7), 16);
         }
-        const toIdx = (v) => Math.round(Math.max(0, Math.min(1, (v + 1) / 2)) * (LUT - 1));
+        const toIdx = (v) => Math.round(Math.max(0, Math.min(1, (v - rangeMin) / (rangeMax - rangeMin))) * (LUT - 1));
 
         /* ── spatial buckets ──────────────────────────────────────── */
         const bSz = Math.max(4, Math.round(spacing));
@@ -188,7 +196,7 @@ export default function HeatmapLayer({ data, activeBand, farmBoundary }) {
                 overlayRef.current = null;
             }
         };
-    }, [map, data, activeBand, farmBoundary]);
+    }, [map, data, activeBand, activeSatellite, farmBoundary]);
 
     return null;
 }

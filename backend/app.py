@@ -38,9 +38,17 @@ from services.gee_service import (
     get_available_dates,
     get_single_day_composite,
 )
+from services.s1_gee_service import (
+    get_s1_composite,
+    get_s1_smooth_tile_url,
+    sample_s1_point_value,
+    get_s1_available_dates,
+    get_s1_single_day_composite,
+)
 from services.index_service import compute_all_indices
-from services.grid_service import generate_grid, reduce_grid_values
-from services.stats_service import extract_farm_statistics
+from services.s1_index_service import compute_s1_indices
+from services.grid_service import generate_grid, reduce_grid_values, reduce_s1_grid_values
+from services.stats_service import extract_farm_statistics, extract_s1_farm_statistics
 from services.auth_service import init_firebase, verify_jwt_token
 from utils.geo_utils import geojson_to_ee_geometry, validate_polygon
 
@@ -87,6 +95,12 @@ NDVI_PALETTE = [
     '#77ca6f', '#53bd6b', '#14aa60', '#009755', '#007e47', '#007e47'
 ]
 CVI_PALETTE  = ['#ef4444', '#f59e0b', '#22c55e']
+
+# Sentinel-1 radar palettes
+SMI_PALETTE  = ['#ef4444', '#f59e0b', '#facc15', '#22c55e', '#16a34a', '#0ea5e9', '#2563eb']
+RVI_PALETTE  = ['#92400e', '#b45309', '#d97706', '#65a30d', '#16a34a', '#059669']
+VV_VH_RATIO_PALETTE = ['#7c3aed', '#8b5cf6', '#22c55e', '#84cc16', '#a16207', '#92400e']
+RADAR_DB_PALETTE = ['#1e3a5f', '#2563eb', '#60a5fa', '#93c5fd', '#bfdbfe', '#e0e7ff']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,16 +312,13 @@ def analyze_day():
 @app.route("/api/sample", methods=["GET"])
 def sample():
     """
-    GET /api/sample?lat=...&lng=...&band=NDVI
+    GET /api/sample?lat=...&lng=...&band=NDVI&source=s2
 
     Samples a single pixel value for hover tooltips.
+    Supports both Sentinel-2 (source=s2) and Sentinel-1 (source=s1) bands.
     """
     if not getattr(app, "_gee_ready", False):
         return jsonify({"error": "GEE not initialised"}), 503
-
-    indexed_image = getattr(app, "_last_indexed_image", None)
-    if indexed_image is None:
-        return jsonify({"error": "No analysis available. Run an analysis first."}), 404
 
     try:
         lat = float(request.args.get("lat"))
@@ -315,13 +326,184 @@ def sample():
     except (TypeError, ValueError):
         return jsonify({"error": "lat and lng are required numeric parameters."}), 400
 
-    band = request.args.get("band", "NDVI").upper()
-    valid_bands = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "GNDVI", "CVI"]
-    if band not in valid_bands:
-        return jsonify({"error": f"Invalid band. Must be one of: {valid_bands}"}), 400
+    source = request.args.get("source", "s2").lower()
 
-    value = sample_point_value(indexed_image, lat, lng, band, scale=10)
-    return jsonify({"value": value, "band": band}), 200
+    if source == "s1":
+        indexed_image = getattr(app, "_last_s1_indexed_image", None)
+        if indexed_image is None:
+            return jsonify({"error": "No S1 analysis available. Run an S1 analysis first."}), 404
+        band = request.args.get("band", "VV").upper()
+        valid_bands = ["VV", "VH", "VV_VH_RATIO", "SMI", "RVI"]
+        if band not in valid_bands:
+            return jsonify({"error": f"Invalid S1 band. Must be one of: {valid_bands}"}), 400
+        value = sample_s1_point_value(indexed_image, lat, lng, band, scale=10)
+    else:
+        indexed_image = getattr(app, "_last_indexed_image", None)
+        if indexed_image is None:
+            return jsonify({"error": "No analysis available. Run an analysis first."}), 404
+        band = request.args.get("band", "NDVI").upper()
+        valid_bands = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "GNDVI", "CVI"]
+        if band not in valid_bands:
+            return jsonify({"error": f"Invalid band. Must be one of: {valid_bands}"}), 400
+        value = sample_point_value(indexed_image, lat, lng, band, scale=10)
+
+    return jsonify({"value": value, "band": band, "source": source}), 200
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel-1 Radar Routes
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/analyze-s1", methods=["POST"])
+def analyze_s1():
+    """
+    POST /api/analyze-s1
+
+    Request body (JSON):
+        { "geometry": <GeoJSON Polygon object> }
+
+    Response (JSON):
+        GeoJSON FeatureCollection with per-cell radar metrics + farm_summary.
+    """
+    if not getattr(app, "_gee_ready", False):
+        return jsonify({"error": "Google Earth Engine is not initialised."}), 503
+
+    body = request.get_json(silent=True)
+    if not body or "geometry" not in body:
+        return jsonify({"error": "Request body must contain a 'geometry' key with a GeoJSON Polygon."}), 400
+
+    geojson_geometry = body["geometry"]
+    valid, validation_error = validate_polygon(geojson_geometry)
+    if not valid:
+        logger.warning("Invalid polygon for S1: %s", validation_error)
+        return jsonify({"error": validation_error}), 400
+
+    logger.info("S1 analysis request received. Converting geometry to EE…")
+
+    try:
+        ee_geometry = geojson_to_ee_geometry(geojson_geometry)
+        composite, collection, scene_count = get_s1_composite(ee_geometry)
+
+        if composite is None:
+            return jsonify({
+                "error": "No Sentinel-1 imagery found for this area in the last 3 months."
+            }), 200
+
+        indexed_image = compute_s1_indices(composite)
+        grid          = generate_grid(ee_geometry)
+        result_geojson = reduce_s1_grid_values(indexed_image, grid, ee_geometry)
+        farm_summary   = extract_s1_farm_statistics(indexed_image, ee_geometry, scene_count)
+        result_geojson["farm_summary"] = farm_summary
+        result_geojson["farm_boundary"] = geojson_geometry
+
+        # Tile URLs for S1 bands
+        smi_vis = {'min': 0.0, 'max': 1.0, 'palette': SMI_PALETTE}
+        rvi_vis = {'min': 0.0, 'max': 1.0, 'palette': RVI_PALETTE}
+        ratio_vis = {'min': 2.0, 'max': 15.0, 'palette': VV_VH_RATIO_PALETTE}
+        vv_vis = {'min': -20, 'max': 0, 'palette': RADAR_DB_PALETTE}
+        vh_vis = {'min': -25, 'max': -5, 'palette': RADAR_DB_PALETTE}
+
+        index_tiles = {}
+        index_tiles["smi_tile_url"] = get_s1_smooth_tile_url(indexed_image, ee_geometry, "SMI", smi_vis)
+        index_tiles["rvi_tile_url"] = get_s1_smooth_tile_url(indexed_image, ee_geometry, "RVI", rvi_vis)
+        index_tiles["vv_vh_ratio_tile_url"] = get_s1_smooth_tile_url(indexed_image, ee_geometry, "VV_VH_RATIO", ratio_vis)
+        index_tiles["vv_tile_url"] = get_s1_smooth_tile_url(indexed_image, ee_geometry, "VV", vv_vis)
+        index_tiles["vh_tile_url"] = get_s1_smooth_tile_url(indexed_image, ee_geometry, "VH", vh_vis)
+
+        result_geojson["index_tiles"] = index_tiles
+
+        app._last_s1_indexed_image = indexed_image
+        app._last_s1_ee_geometry   = ee_geometry
+
+        logger.info(
+            "S1 analysis complete — %d scenes, %d grid cells",
+            scene_count,
+            len(result_geojson.get("features", [])),
+        )
+        return jsonify(result_geojson), 200
+
+    except Exception as exc:
+        logger.exception("S1 pipeline error: %s", exc)
+        return jsonify({"error": f"S1 pipeline error: {str(exc)}"}), 500
+
+
+@app.route("/api/analyze-s1-dates", methods=["POST"])
+def analyze_s1_dates():
+    """
+    POST /api/analyze-s1-dates
+
+    Returns all available Sentinel-1 image dates for the polygon.
+    """
+    if not getattr(app, "_gee_ready", False):
+        return jsonify({"error": "GEE not initialised"}), 503
+
+    body = request.get_json(silent=True)
+    if not body or "geometry" not in body:
+        return jsonify({"error": "Missing geometry"}), 400
+
+    geojson_geometry = body["geometry"]
+    valid, validation_error = validate_polygon(geojson_geometry)
+    if not valid:
+        return jsonify({"error": validation_error}), 400
+
+    try:
+        ee_geometry = geojson_to_ee_geometry(geojson_geometry)
+        dates = get_s1_available_dates(ee_geometry)
+        logger.info("Found %d available S1 dates.", len(dates))
+        return jsonify({"dates": dates}), 200
+    except Exception as exc:
+        logger.exception("Error fetching S1 dates: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/analyze-s1-day", methods=["POST"])
+def analyze_s1_day():
+    """
+    POST /api/analyze-s1-day
+
+    Request body: { "geometry": <GeoJSON>, "date": "2026-04-15" }
+    Returns single-day S1 radar analysis.
+    """
+    if not getattr(app, "_gee_ready", False):
+        return jsonify({"error": "GEE not initialised"}), 503
+
+    body = request.get_json(silent=True)
+    if not body or "geometry" not in body or "date" not in body:
+        return jsonify({"error": "Missing geometry or date"}), 400
+
+    geojson_geometry = body["geometry"]
+    target_date = body["date"]
+
+    valid, validation_error = validate_polygon(geojson_geometry)
+    if not valid:
+        return jsonify({"error": validation_error}), 400
+
+    try:
+        ee_geometry = geojson_to_ee_geometry(geojson_geometry)
+        composite, scene_count = get_s1_single_day_composite(ee_geometry, target_date)
+
+        if composite is None:
+            return jsonify({"error": f"No S1 imagery found for date {target_date}"}), 200
+
+        indexed_image = compute_s1_indices(composite)
+        grid = generate_grid(ee_geometry)
+        result_geojson = reduce_s1_grid_values(indexed_image, grid, ee_geometry)
+
+        farm_summary = extract_s1_farm_statistics(indexed_image, ee_geometry, scene_count)
+        result_geojson["farm_summary"] = farm_summary
+        result_geojson["date"] = target_date
+        result_geojson["scene_count"] = scene_count
+        result_geojson["farm_boundary"] = geojson_geometry
+
+        app._last_s1_indexed_image = indexed_image
+        app._last_s1_ee_geometry   = ee_geometry
+
+        logger.info("S1 day analysis complete for %s — %d scenes", target_date, scene_count)
+        return jsonify(result_geojson), 200
+
+    except Exception as exc:
+        logger.exception("S1 day analysis error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth Routes (Firebase Architecture 2)
